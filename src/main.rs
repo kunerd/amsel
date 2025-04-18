@@ -1,95 +1,101 @@
-use std::env::args;
-use std::error::Error;
+use std::time::Duration;
 
-use stream_download::process::{ProcessStreamParams, YtDlpCommand};
-use stream_download::storage::temp::TempStorageProvider;
-use stream_download::{Settings, StreamDownload};
-use tracing::info;
-use tracing::metadata::LevelFilter;
-use tracing_subscriber::EnvFilter;
-use youtube_dl::YoutubeDl;
+use iced::widget::{column, container, text, text_input};
+use iced::{Element, Length, Task, Theme};
+use player_core::Video;
 
-use reqwest;
-use serde::Deserialize;
+// #[derive(Debug, Deserialize)]
+// struct ListResponse {
+//     items: Vec<Video>,
+// }
 
-use std::collections::HashMap;
+// #[derive(Debug, Deserialize)]
+// struct Video {
+//     id: HashMap<String, String>,
+// }
 
-#[derive(Debug, Deserialize)]
-struct ListResponse {
-    items: Vec<Video>,
+fn main() -> iced::Result {
+    iced::application(Player::new, Player::update, Player::view)
+        .title(Player::title)
+        // .font(icon::FONT)
+        // .subscription(Icebreaker::subscription)
+        .theme(Player::theme)
+        .run()
 }
 
-#[derive(Debug, Deserialize)]
-struct Video {
-    id: HashMap<String, String>,
+#[derive(Debug, Clone)]
+enum Message {
+    SearchChanged(String),
+    SearchCooled,
+    VideosListed(Vec<Video>),
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // let token = env!("YT_TOKEN");
-    // let search_text = "justin johnson";
-    // let list: ListResponse = reqwest::Client::new()
-    //     .get("https://www.googleapis.com/youtube/v3/search")
-    //     // .header("Authorization", format!("Bearer {token}"))
-    //     .query(&[("part", "id,snippet")])
-    //     .query(&[("q", search_text)])
-    //     .query(&[("maxResults", "1")])
-    //     .query(&[("key", token)])
-    //     .query(&[("type", "video")])
-    //     .send().await.unwrap().json().await.unwrap();
+struct Player {
+    search: String,
+    search_temperature: usize,
+    is_searching: bool,
+}
 
-    // let video_id = list.items.first().unwrap().id.get("videoId").unwrap();
+impl Player {
+    pub fn new() -> (Self, Task<Message>) {
+        (
+            Self {
+                search: String::new(),
+                search_temperature: 0,
+                is_searching: false,
+            },
+            Task::none(),
+        )
+    }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::default().add_directive(LevelFilter::INFO.into()))
-        .with_line_number(true)
-        .with_file(true)
-        .init();
+    fn title(&self) -> String {
+        "Player".to_string()
+    }
 
-    // let url = args()
-    //     .nth(1)
-    // .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={video_id}"));
-    // .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={video_id}"));
-    // let url = "https://www.youtube.com/watch?v=L_XJ_s5IsQc".to_string();
-    let url = "https://www.youtube.com/watch?v=dGEjbJkxFhs".to_string();
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::SearchChanged(search) => {
+                self.search = search;
+                self.search_temperature += 1;
 
-    let format = "m4a";
+                Task::perform(tokio::time::sleep(Duration::from_secs(1)), |_| {
+                    Message::SearchCooled
+                })
+            }
+            Message::SearchCooled => {
+                self.search_temperature = self.search_temperature.saturating_sub(1);
 
-    info!("extracting video metadata - this may take a few seconds");
-    let output = YoutubeDl::new(&url)
-        .format(format)
-        .extract_audio(true)
-        .run_async()
-        .await
-        .expect("meta data")
-        .into_single_video()
-        .expect("to extract video metadata");
-    info!("metadata extraction complete");
+                if self.search_temperature == 0 {
+                    self.is_searching = true;
 
-    let size = output.filesize.expect("file size") as u64;
+                    Task::perform(Video::search(self.search.clone()), Message::VideosListed)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::VideosListed(videos) => {
+                self.is_searching = false;
+                Task::none()
+            }
+        }
+    }
 
-    let cmd = YtDlpCommand::new(url).extract_audio(true).format(format);
-    let reader = StreamDownload::new_process(
-        ProcessStreamParams::new(cmd)?.content_length(size),
-        TempStorageProvider::new(),
-        // Disable cancel_on_drop to ensure no error messages from the process are lost.
-        Settings::default().cancel_on_drop(false),
-    )
-    .await?;
-    let reader_handle = reader.handle();
-    let reader = Box::new(reader);
+    fn view(&self) -> Element<'_, Message> {
+        let search = text_input("Search videos ...", &self.search)
+            .size(20)
+            .padding(10)
+            .on_input(Message::SearchChanged);
 
-    let handle = tokio::task::spawn_blocking(move || {
-        let (_stream, handle) = rodio::OutputStream::try_default()?;
-        let sink = rodio::Sink::try_new(&handle)?;
-        sink.append(rodio::Decoder::new(reader)?);
-        sink.sleep_until_end();
+        let content = if self.is_searching || self.search_temperature > 0 {
+            container(text("Searching...")).center(Length::Fill)
+        } else {
+            container(text("Not implemented, yet!")).center(Length::Fill)
+        };
 
-        Ok::<_, Box<dyn Error + Send + Sync>>(())
-    });
-    handle.await?;
-    // Wait for the spawned subprocess to terminate gracefully
-    reader_handle.wait_for_completion().await;
+        column![search, content].into()
+    }
 
-    Ok(())
+    fn theme(&self) -> Theme {
+        Theme::TokyoNightStorm
+    }
 }

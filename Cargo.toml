@@ -1,10 +1,24 @@
 [package]
 name = "yt-music-player"
+author = "Hendrik Kunert"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.97"
+player_core.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+
+iced.workspace = true
+iced.features = [ "tokio", "web-colors", "debug"]
+
+[workspace]
+members = ["core"]
+
+[workspace.dependencies]
+player_core.path = "./core"
+
+iced = { git = "https://github.com/iced-rs/iced.git", rev = "388a419ed5c229aadbca57bb09b474b1475b1ef9"}
 reqwest = { version = "0.12.15", features = ["json"] }
 rodio = { version = "0.20.1", features = ["symphonia", "symphonia-all"] }
 serde = { version = "1.0.219", features = ["derive", "serde_derive"] }
