@@ -1,0 +1,16 @@
+[package]
+name = "yt-music-player"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.97"
+reqwest = { version = "0.12.15", features = ["json"] }
+rodio = { version = "0.20.1", features = ["symphonia", "symphonia-all"] }
+serde = { version = "1.0.219", features = ["derive", "serde_derive"] }
+serde_json = "1.0.140"
+stream-download = { version = "0.19.0", features = ["async-read", "process", "registry", "reqwest-middleware", "reqwest-native-tls", "reqwest-rustls"] }
+tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+youtube_dl = { version = "0.10.0", features = ["tokio"] }
