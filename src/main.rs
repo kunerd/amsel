@@ -1,18 +1,8 @@
 use std::time::Duration;
 
-use iced::widget::{column, container, text, text_input};
+use iced::widget::{column, container, scrollable, text, text_input};
 use iced::{Element, Length, Task, Theme};
-use player_core::Video;
-
-// #[derive(Debug, Deserialize)]
-// struct ListResponse {
-//     items: Vec<Video>,
-// }
-
-// #[derive(Debug, Deserialize)]
-// struct Video {
-//     id: HashMap<String, String>,
-// }
+use player_core::{Error, Video};
 
 fn main() -> iced::Result {
     iced::application(Player::new, Player::update, Player::view)
@@ -27,13 +17,15 @@ fn main() -> iced::Result {
 enum Message {
     SearchChanged(String),
     SearchCooled,
-    VideosListed(Vec<Video>),
+    VideosListed(Result<Vec<Video>, Error>),
 }
 
 struct Player {
     search: String,
     search_temperature: usize,
     is_searching: bool,
+
+    videos: Vec<Video>,
 }
 
 impl Player {
@@ -43,6 +35,8 @@ impl Player {
                 search: String::new(),
                 search_temperature: 0,
                 is_searching: false,
+
+                videos: Vec::new(),
             },
             Task::none(),
         )
@@ -73,8 +67,14 @@ impl Player {
                     Task::none()
                 }
             }
-            Message::VideosListed(videos) => {
+            Message::VideosListed(Ok(videos)) => {
                 self.is_searching = false;
+                self.videos = videos;
+
+                Task::none()
+            }
+            Message::VideosListed(Err(err)) => {
+                dbg!(err);
                 Task::none()
             }
         }
@@ -89,7 +89,13 @@ impl Player {
         let content = if self.is_searching || self.search_temperature > 0 {
             container(text("Searching...")).center(Length::Fill)
         } else {
-            container(text("Not implemented, yet!")).center(Length::Fill)
+            if self.videos.is_empty() {
+                container(text("No videos found!")).center(Length::Fill)
+            } else {
+                let list = scrollable(column(self.videos.iter().map(|v| text(&v.title).into())));
+
+                container(list).center(Length::Fill)
+            }
         };
 
         column![search, content].into()
