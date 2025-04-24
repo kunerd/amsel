@@ -4,9 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-reqwest.workspace = true
+futures.workspace = true
+tokio.workspace = true
+
+reqwest = { version = "0.12.15", features = ["json"] }
+youtube_dl = { version = "0.10.0", features = ["tokio"] }
 
 serde = { version = "1.0.219", features = ["derive", "serde_derive"] }
 serde_json = "1.0.140"
 
 thiserror = "2"
+
+rodio = { version = "0.20.1", features = ["symphonia", "symphonia-all"] }
+stream-download = { version = "0.19.0", features = ["async-read", "process", "registry", "reqwest-middleware", "reqwest-native-tls", "reqwest-rustls"] }

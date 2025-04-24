@@ -6,7 +6,6 @@ edition = "2024"
 
 [dependencies]
 player_core.workspace = true
-reqwest.workspace = true
 tokio.workspace = true
 
 iced.workspace = true
@@ -17,12 +16,9 @@ members = ["core"]
 
 [workspace.dependencies]
 player_core.path = "./core"
+futures = "0.3"
 
 iced = { git = "https://github.com/iced-rs/iced.git", rev = "388a419ed5c229aadbca57bb09b474b1475b1ef9"}
-reqwest = { version = "0.12.15", features = ["json"] }
-rodio = { version = "0.20.1", features = ["symphonia", "symphonia-all"] }
-stream-download = { version = "0.19.0", features = ["async-read", "process", "registry", "reqwest-middleware", "reqwest-native-tls", "reqwest-rustls"] }
 tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-youtube_dl = { version = "0.10.0", features = ["tokio"] }

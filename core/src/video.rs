@@ -5,7 +5,7 @@ use crate::Error;
 
 #[derive(Debug, Clone)]
 pub struct Video {
-    id: String,
+    pub id: String,
     pub title: String,
 }
 

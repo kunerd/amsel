@@ -1,8 +1,10 @@
+pub mod backend;
 mod video;
 
-use std::sync::Arc;
-
+pub use backend::Backend;
 pub use video::Video;
+
+use std::sync::Arc;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
