@@ -1,7 +1,10 @@
 use std::time::Duration;
 
-use futures::{SinkExt, channel::mpsc};
-use rodio::Source;
+use futures::{
+    SinkExt,
+    channel::mpsc::{self},
+};
+use rodio::{Decoder, Source};
 use stream_download::{
     Settings, StreamDownload,
     process::{ProcessStreamParams, YtDlpCommand},
@@ -13,7 +16,7 @@ use youtube_dl::YoutubeDl;
 pub struct Backend(mpsc::Sender<Command>);
 
 impl Backend {
-    pub async fn play(mut self, id: String) -> u64 {
+    pub async fn load_and_play(mut self, id: String) -> Option<Duration> {
         let format = "m4a";
         let url = format!("https://www.youtube.com/watch?v={id}");
         let output = YoutubeDl::new(&url)
@@ -37,23 +40,36 @@ impl Backend {
         .await
         .unwrap();
 
-        // let reader_handle = reader.handle();
-        let reader = Box::new(reader);
+        let reader = reader;
+        let decoder = tokio::task::spawn_blocking(|| rodio::Decoder::new(reader).unwrap())
+            .await
+            .unwrap();
+        let duration = decoder.total_duration();
 
-        self.0.send(Command::Play(reader)).await.unwrap();
+        self.0.send(Command::PlayStream(decoder)).await.unwrap();
 
-        size
+        duration
     }
 
     pub async fn seek_to(mut self, pos: Duration) -> Duration {
-        self.0.send(Command::Seek(pos.clone())).await;
+        self.0.send(Command::Seek(pos.clone())).await.unwrap();
 
         pos
+    }
+
+    pub async fn play(mut self) {
+        self.0.send(Command::Play).await.unwrap();
+    }
+
+    pub async fn pause(mut self) {
+        self.0.send(Command::Pause).await.unwrap();
     }
 }
 
 pub enum Command {
-    Play(Box<StreamDownload<TempStorageProvider>>),
+    PlayStream(Decoder<StreamDownload<TempStorageProvider>>),
+    Play,
+    Pause,
     Seek(Duration),
 }
 
@@ -61,17 +77,13 @@ pub enum Command {
 pub enum Event {
     Started(Backend),
     PlaybackPosition(Duration),
-    PlaybackDuration(Option<Duration>),
 }
 
 pub fn start() -> impl futures::Stream<Item = Event> {
     let (event_tx, event_rx) = mpsc::channel(100);
 
-    // let runner =
-    //     stream::once(async { tokio::task::spawn(run(event_tx)).await }).map(|_| unreachable!());
-    tokio::task::spawn_blocking(|| run(event_tx));
+    std::thread::spawn(|| run(event_tx));
 
-    // stream::select(event_rx, runner)
     event_rx
 }
 
@@ -92,26 +104,33 @@ fn run(mut sender: mpsc::Sender<Event>) {
                 let sink = rodio::Sink::try_new(&handle).unwrap();
                 let backend = Backend(command_tx);
 
-                let _ = sender.try_send(Event::Started(backend));
+                sender.try_send(Event::Started(backend)).unwrap();
                 state = State::Running(sink, stream, command_rx);
             }
             State::Running(ref sink, ref _stream, ref mut command_rx) => {
                 match command_rx.try_next() {
                     Ok(Some(command)) => match command {
-                        Command::Play(reader) => {
+                        Command::PlayStream(decoder) => {
                             sink.clear();
-                            let decoder = rodio::Decoder::new(reader).unwrap();
-                            sender.try_send(Event::PlaybackDuration(decoder.total_duration()));
                             sink.append(decoder);
                             sink.play();
                         }
+                        Command::Play => {
+                            sink.play();
+                        }
+                        Command::Pause => {
+                            sink.pause();
+                        }
                         Command::Seek(pos) => {
-                            sink.try_seek(pos);
+                            sink.try_seek(pos).unwrap();
                         }
                     },
-                    Ok(None) => break,
+                    Ok(None) => {
+                        dbg!("No one is interested anymore.");
+                        return;
+                    }
                     Err(_err) => {
-                        sender.try_send(Event::PlaybackPosition(sink.get_pos()));
+                        let _ = sender.try_send(Event::PlaybackPosition(sink.get_pos()));
                         std::thread::sleep(Duration::from_millis(20));
                     }
                 }

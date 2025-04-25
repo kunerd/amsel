@@ -19,6 +19,7 @@ player_core.path = "./core"
 futures = "0.3"
 
 iced = { git = "https://github.com/iced-rs/iced.git", rev = "388a419ed5c229aadbca57bb09b474b1475b1ef9"}
+chrono = { version = "0.4", features = [ "serde" ] }
 tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use iced::widget::{
     button, column, container, horizontal_rule, horizontal_space, row, scrollable, slider, text,
-    text_input, vertical_slider,
+    text_input,
 };
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use player_core::{Error, Video, backend};
@@ -22,10 +22,13 @@ enum Message {
     SearchCooled,
     VideosListed(Result<Vec<Video>, Error>),
     VideoSelected(usize),
-    PlayheadMoved(f32),
+    PlayPressed,
+    PausePressed,
     Backend(backend::Event),
-    PlaybackStarted(Video, u64),
+    PlaybackStarted(Video, Duration, Duration),
+    PlayheadMoved(f32),
     PlaybackPositionChanged(Duration),
+    VideoPaused,
 }
 
 struct Player {
@@ -41,8 +44,9 @@ struct Player {
 
 enum State {
     Idle,
+    Loading(Video),
     Playing(Video, Duration, Duration),
-    Pause(Video),
+    Pause(Video, Duration, Duration),
 }
 
 enum Backend {
@@ -102,7 +106,7 @@ impl Player {
                 Task::none()
             }
             Message::VideoSelected(index) => {
-                let Some(video) = &self.videos.get(index) else {
+                let Some(video) = &self.videos.get(index).cloned() else {
                     return Task::none();
                 };
 
@@ -110,10 +114,15 @@ impl Player {
                     return Task::none();
                 };
 
-                let video = video.clone().clone();
-                Task::perform(backend.clone().play(video.id.clone()), move |length| {
-                    Message::PlaybackStarted(video, length)
-                })
+                self.playing = State::Loading(video.clone());
+
+                let video = video.clone();
+                Task::perform(
+                    backend.clone().load_and_play(video.id.clone()),
+                    move |duration| {
+                        Message::PlaybackStarted(video, Duration::from_secs(0), duration.unwrap())
+                    },
+                )
             }
             Message::PlayheadMoved(pos) => {
                 let State::Playing(_, cur_pos, length) = &mut self.playing else {
@@ -123,8 +132,7 @@ impl Player {
                     return Task::none();
                 };
 
-                dbg!(pos);
-                let new_pos = pos / 100.0 * length.as_secs_f32();
+                let new_pos = pos * length.as_secs_f32();
                 *cur_pos = Duration::from_secs_f32(new_pos);
 
                 Task::perform(
@@ -146,30 +154,52 @@ impl Player {
 
                     Task::none()
                 }
-                backend::Event::PlaybackDuration(duration) => {
-                    let State::Playing(_, _, length) = &mut self.playing else {
-                        return Task::none();
-                    };
-
-                    *length = duration.expect("valid duration");
-
-                    Task::none()
-                }
             },
-            Message::PlaybackStarted(video, length) => {
-                self.playing =
-                    State::Playing(video, Duration::from_secs(0), Duration::from_secs(1));
+            Message::PlaybackStarted(video, cur_pos, duration) => {
+                self.playing = State::Playing(video, cur_pos, duration);
 
                 Task::none()
             }
-            Message::PlaybackPositionChanged(pos) => {
-                let State::Playing(_, cur_pos, _) = &mut self.playing else {
+            Message::PlaybackPositionChanged(_pos) => {
+                let State::Playing(_, _cur_pos, _) = &mut self.playing else {
                     return Task::none();
                 };
 
                 // *cur_pos = pos;
 
                 Task::none()
+            }
+            Message::PausePressed => {
+                let Backend::Started(backend) = &self.backend else {
+                    return Task::none();
+                };
+
+                Task::perform(backend.clone().pause(), |_| Message::VideoPaused)
+            }
+            Message::VideoPaused => {
+                let State::Playing(video, cur_pos, duration) = &self.playing else {
+                    return Task::none();
+                };
+
+                self.playing = State::Pause(video.clone(), *cur_pos, *duration);
+
+                Task::none()
+            }
+            Message::PlayPressed => {
+                let State::Pause(video, cur_pos, duration) = &self.playing else {
+                    return Task::none();
+                };
+
+                let Backend::Started(backend) = &self.backend else {
+                    return Task::none();
+                };
+
+                let video = video.clone();
+                let cur_pos = *cur_pos;
+                let duration = *duration;
+                Task::perform(backend.clone().play(), move |_| {
+                    Message::PlaybackStarted(video, cur_pos, duration)
+                })
             }
         }
     }
@@ -188,14 +218,27 @@ impl Player {
             } else {
                 let list = scrollable(
                     column(self.videos.iter().enumerate().map(|(i, v)| {
-                        button(text(&v.title))
-                            .on_press(Message::VideoSelected(i))
-                            .width(Length::Fill)
-                            .style(button::secondary)
-                            .into()
+                        button(
+                            row![
+                                text(&v.title),
+                                horizontal_space(),
+                                text!(
+                                    "{:02}:{:02}:{:02}",
+                                    v.duration.num_hours(),
+                                    v.duration.num_minutes() % 60,
+                                    v.duration.num_seconds() % 60
+                                )
+                            ]
+                            .align_y(Alignment::Center),
+                        )
+                        .on_press(Message::VideoSelected(i))
+                        .width(Length::Fill)
+                        .style(button::secondary)
+                        .into()
                     }))
                     .spacing(5),
-                );
+                )
+                .spacing(5);
 
                 container(list).center(Length::Fill)
             }
@@ -204,8 +247,14 @@ impl Player {
         let player = {
             match &self.playing {
                 State::Idle => container(text("Choose a file to start playback.")),
-                State::Playing(video, cur_pos, length) => {
-                    let normalized_pos = cur_pos.as_secs_f32() / length.as_secs_f32() * 100.0;
+                State::Loading(video) => container(row![
+                    text(&video.title).width(Length::FillPortion(1)),
+                    container(text("Loading...")).center_x(Length::FillPortion(1)),
+                    horizontal_space()
+                ])
+                .padding(10),
+                State::Playing(video, cur_pos, duration) => {
+                    let normalized_pos = cur_pos.as_secs_f32() / duration.as_secs_f32();
                     let format_time = |time: &Duration| {
                         let secs = time.as_secs();
 
@@ -220,13 +269,15 @@ impl Player {
                         }
                     };
                     container(row![
-                        horizontal_space().width(Length::FillPortion(1)),
+                        text(&video.title).width(Length::FillPortion(1)),
                         column![
-                            text(&video.title),
+                            container(button("Pause").on_press(Message::PausePressed))
+                                .center_x(Length::Fill),
                             row![
                                 text(format_time(cur_pos)),
-                                slider(0.0..=100.0, normalized_pos, Message::PlayheadMoved),
-                                text(format_time(length))
+                                slider(0.0..=1.0, normalized_pos, Message::PlayheadMoved)
+                                    .step(0.01),
+                                text(format_time(duration))
                             ]
                             .spacing(10)
                             .align_y(Alignment::Center)
@@ -237,7 +288,40 @@ impl Player {
                     ])
                     .padding(10)
                 }
-                State::Pause(_video) => todo!(),
+                State::Pause(video, cur_pos, duration) => {
+                    let normalized_pos = cur_pos.as_secs_f32() / duration.as_secs_f32() * 100.0;
+                    let format_time = |time: &Duration| {
+                        let secs = time.as_secs();
+
+                        let (minutes, secs) = (secs / 60, secs % 60);
+
+                        if minutes >= 60 {
+                            let (hours, minutes) = (minutes / 60, minutes % 60);
+
+                            format!("{}:{:0>2}:{:0>2}", hours, minutes, secs)
+                        } else {
+                            format!("{:0>2}:{:0>2}", minutes, secs)
+                        }
+                    };
+                    container(row![
+                        text(&video.title).width(Length::FillPortion(1)),
+                        column![
+                            container(button("Play").on_press(Message::PlayPressed))
+                                .center_x(Length::Fill),
+                            row![
+                                text(format_time(cur_pos)),
+                                slider(0.0..=100.0, normalized_pos, Message::PlayheadMoved),
+                                text(format_time(duration))
+                            ]
+                            .spacing(10)
+                            .align_y(Alignment::Center)
+                        ]
+                        .spacing(5)
+                        .width(Length::FillPortion(1)),
+                        horizontal_space()
+                    ])
+                    .padding(10)
+                }
             }
         };
 

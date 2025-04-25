@@ -1,5 +1,5 @@
-use reqwest::Client;
-use serde::Deserialize;
+use chrono::{Duration, TimeDelta};
+use serde::{Deserialize, Deserializer};
 
 use crate::Error;
 
@@ -7,17 +7,7 @@ use crate::Error;
 pub struct Video {
     pub id: String,
     pub title: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListResponse {
-    items: Vec<SearchResult>,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-struct SearchResult {
-    id: Id,
-    snippet: Snippet,
+    pub duration: Duration,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -56,87 +46,128 @@ impl Video {
 
         let list: ListResponse = response.json().await?;
 
-        list.items
+        let ids: Vec<_> = list
+            .items
             .into_iter()
-            .filter_map(|search| search.try_into().ok())
-            .map(Ok)
-            .collect()
+            .filter_map(|search| match search.id {
+                Id::Video { video_id } => Some(video_id),
+                _ => None,
+            })
+            // .filter_map(|search| search.try_into().ok())
+            // .map(Ok)
+            .collect();
+
+        let videos_resource: VideosResource = reqwest::Client::new()
+            .get("https://www.googleapis.com/youtube/v3/videos")
+            // FIXME add oAuth
+            // .header("Authorization", format!("Bearer {token}"))
+            // .query(&[("part", "id,snippet,fileDetails")])
+            .query(&[("part", "id,snippet,statistics,contentDetails")])
+            .query(&[("id", ids.join(","))])
+            .query(&[("maxResults", "25")])
+            .query(&[("key", token)])
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        Ok(videos_resource
+            .items
+            .into_iter()
+            .map(|resource| Video {
+                id: resource.id,
+                title: resource.snippet.title,
+                duration: resource.content_details.duration,
+            })
+            .collect())
     }
 }
 
-impl TryFrom<SearchResult> for Video {
-    type Error = ();
-
-    fn try_from(search: SearchResult) -> Result<Self, Self::Error> {
-        let Id::Video { video_id: id } = search.id else {
-            return Err(());
-        };
-
-        Ok(Self {
-            id,
-            title: search.snippet.title,
-        })
-    }
+#[derive(Debug, Deserialize)]
+struct ListResponse {
+    items: Vec<SearchResult>,
 }
 
-// pub async fn _playback() -> anyhow::Result<()> {
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct SearchResult {
+    id: Id,
+    snippet: Snippet,
+}
 
-//     // let video_id = list.items.first().unwrap().id.get("videoId").unwrap();
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct VideosResource {
+    items: Vec<VideoResource>,
+}
 
-//     tracing_subscriber::fmt()
-//         .with_env_filter(EnvFilter::default().add_directive(LevelFilter::INFO.into()))
-//         .with_line_number(true)
-//         .with_file(true)
-//         .init();
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct VideoResource {
+    id: String,
+    snippet: Snippet,
+    content_details: ContentDetails,
+}
 
-//     // let url = args()
-//     //     .nth(1)
-//     // .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={video_id}"));
-//     // .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={video_id}"));
-//     // let url = "https://www.youtube.com/watch?v=L_XJ_s5IsQc".to_string();
-//     let url = "https://www.youtube.com/watch?v=dGEjbJkxFhs".to_string();
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ContentDetails {
+    #[serde(deserialize_with = "deserialize_iso8601_duration")]
+    duration: TimeDelta,
+}
 
-//     let format = "m4a";
+pub fn deserialize_iso8601_duration<'de, D>(deserializer: D) -> Result<TimeDelta, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    let duration = iso8601_duration::Duration::parse(&s).unwrap();
+    Ok(duration.to_chrono().unwrap())
+}
+// impl Playlist {
+//     pub async fn from_ids(ids: Vec<String>) -> Self {
+//         let token = env!("YT_TOKEN");
 
-//     info!("extracting video metadata - this may take a few seconds");
-//     let output = YoutubeDl::new(&url)
-//         .format(format)
-//         .extract_audio(true)
-//         .run_async()
-//         .await
-//         .expect("meta data")
-//         .into_single_video()
-//         .expect("to extract video metadata");
-//     info!("metadata extraction complete");
+//         let response = reqwest::Client::new()
+//             .get("https://www.googleapis.com/youtube/v3/playlists")
+//             .query(&[("part", "id,snippet")])
+//             .query(&[("id", id.into_iter().join(","))])
+//             .query(&[("key", token)])
+//             .send()
+//             .await?;
 
-//     let size = output.filesize.expect("file size") as u64;
-
-//     let cmd = YtDlpCommand::new(url).extract_audio(true).format(format);
-//     let reader = StreamDownload::new_process(
-//         ProcessStreamParams::new(cmd)?.content_length(size),
-//         TempStorageProvider::new(),
-//         // Disable cancel_on_drop to ensure no error messages from the process are lost.
-//         Settings::default().cancel_on_drop(false),
-//     )
-//     .await?;
-//     let reader_handle = reader.handle();
-//     let reader = Box::new(reader);
-
-//     let handle = tokio::task::spawn_blocking(move || {
-//         let (_stream, handle) = rodio::OutputStream::try_default()?;
-//         let sink = rodio::Sink::try_new(&handle)?;
-//         sink.append(rodio::Decoder::new(reader)?);
-//         sink.sleep_until_end();
-
-//         Ok::<_, Box<dyn Error + Send + Sync>>(())
-//     });
-//     handle.await?;
-//     // Wait for the spawned subprocess to terminate gracefully
-//     reader_handle.wait_for_completion().await;
-
-//     Ok(())
+//     }
 // }
-//
+
+// impl TryFrom<SearchResult> for Video {
+//     type Error = ();
+
+//     fn try_from(search: SearchResult) -> Result<Self, Self::Error> {
+//         let Id::Video { video_id: id } = search.id else {
+//             return Err(());
+//         };
+
+//         Ok(Self {
+//             id,
+//             title: search.snippet.title,
+//         })
+//     }
+// }
+
+// impl TryFrom<SearchResult> for Resource {
+//     type Error;
+
+//     fn try_from(search: SearchResult) -> Result<Self, Self::Error> {
+//         let result = match search.id {
+//             Id::Video { video_id } => Resource::Video {
+//                 id: video_id,
+//                 title: search.snippet.title,
+//             },
+//             Id::Channel { channel_id } => return Err(()),
+//             Id::Playlist { playlist_id } => Resource::Playlist { id: playlist_id, title: search.snippet.title, videos: () },
+//         }
+//     }
+// }
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -259,5 +290,89 @@ mod test {
                 }
             }
         );
+    }
+
+    #[test]
+    fn parse_videos_resource() {
+        let json = r#"
+{
+  "kind": "youtube#videoListResponse",
+  "etag": "1w5F3FCMpByyYWkU-1dOE20vDW4",
+  "items": [
+    {
+      "kind": "youtube#video",
+      "etag": "eBoa1A_qEhFmkvL88y0HKyxwQAU",
+      "id": "FUvxRjYqjEQ",
+      "snippet": {
+        "publishedAt": "2014-09-11T17:03:26Z",
+        "channelId": "UC1-evqmLMusdbdD65Sz0-5Q",
+        "title": "The Allman Brothers Band - Whipping Post - 9/23/1970 - Fillmore East (Official)",
+        "description": "The Allman Brothers Band - Whipping Post\nRecorded Live: 9/23/1970 - Fillmore East - New York, NY\nMore The Allman Brothers Band at Music Vault: http://www.musicvault.com\nSubscribe to Music Vault on YouTube: http://goo.gl/DUzpUF\n\nPersonnel: \nGregg Allman - organ, vocals\nDuane Allman - guitar, vocals\nDickey Betts - guitar, vocals\nBerry Oakley - bass, vocals\nButch Trucks - drums\nJai Johanny Johanson - drums\nTom Doucette - harp\n\nSummary: \nOn this date, Bill Graham assembled a stellar roster of bands to participate in the filming of a television special called Welcome To The Fillmore East for broadcast on educational channels. Short sets were filmed by the Byrds, the Elvin Bishop Group, Sha-Na-Na, Van Morrison, and the Allman Brothers Band, as well as behind-the-scenes footage of Bill Graham and the Fillmore East staff at work. \n\nThe Allman Brothers performance is nothing short of spectacular and features the original lineup that included Duane Allman and Berry Oakley. Recorded six months prior to the legendary Live At Fillmore East double album set, this performance captures the Allman Brothers when they were a relatively new band, full of youthful passion and performing what would become classic original material when it was fresh and new.\n\nFollowing Bill Graham's introduction, they kick things off with a tight performance of \"Don't Keep Me Wonderin',\" which features the band's friend, Tom Doucette, blowing harp over the group's trademark sound. Gregg's vocal is barely audible, but it's obvious the group is full of fire. \"Dreams,\" which follows, slows things down a bit and the group establishes a relaxed groove that showcases their trademark sound, blending elements that would eventually come to define \"Southern Rock.\"\n\nThey hit their stride on the next number, Dickey Betts' \"In Memory Of Elizabeth Reed.\" Here, the dual guitar attack of Allman and Betts is astounding. The two guitarists intertwine and synchronize in a manner nothing short of telepathic, creating a melting pot seasoned with elements of jazz, rock, country, and blues into a style utterly their own. The set ends with a ferocious take of \"Whipping Post\" that features outstanding melodic bass playing from Berry Oakley, with both Duane Allman and Dickey Betts soaring over the propulsive rhythm section. Shorter than the expansive versions that would develop in coming months, this is all the more fascinating for it, as they compress an incredible amount of energy into the time allotted. \n\nTime constrictions and vocal microphone malfunctions aside, this is still a fascinating performance. This original lineup of the band was certainly one of the most innovative and captivating bands to ever play the Fillmore.",
+        "thumbnails": {
+          "default": {
+            "url": "https://i.ytimg.com/vi/FUvxRjYqjEQ/default.jpg",
+            "width": 120,
+            "height": 90
+          },
+          "medium": {
+            "url": "https://i.ytimg.com/vi/FUvxRjYqjEQ/mqdefault.jpg",
+            "width": 320,
+            "height": 180
+          },
+          "high": {
+            "url": "https://i.ytimg.com/vi/FUvxRjYqjEQ/hqdefault.jpg",
+            "width": 480,
+            "height": 360
+          },
+          "standard": {
+            "url": "https://i.ytimg.com/vi/FUvxRjYqjEQ/sddefault.jpg",
+            "width": 640,
+            "height": 480
+          }
+        },
+        "channelTitle": "Allman Brothers on MV",
+        "tags": [
+          "The Allman Brothers Band",
+          "Bill Graham",
+          "live music",
+          "music vault",
+          "New York",
+          "Fillmore East",
+          "Idlewild South Tour",
+          "Whipping Post"
+        ],
+        "categoryId": "10",
+        "liveBroadcastContent": "none",
+        "localized": {
+          "title": "The Allman Brothers Band - Whipping Post - 9/23/1970 - Fillmore East (Official)",
+          "description": "The Allman Brothers Band - Whipping Post\nRecorded Live: 9/23/1970 - Fillmore East - New York, NY\nMore The Allman Brothers Band at Music Vault: http://www.musicvault.com\nSubscribe to Music Vault on YouTube: http://goo.gl/DUzpUF\n\nPersonnel: \nGregg Allman - organ, vocals\nDuane Allman - guitar, vocals\nDickey Betts - guitar, vocals\nBerry Oakley - bass, vocals\nButch Trucks - drums\nJai Johanny Johanson - drums\nTom Doucette - harp\n\nSummary: \nOn this date, Bill Graham assembled a stellar roster of bands to participate in the filming of a television special called Welcome To The Fillmore East for broadcast on educational channels. Short sets were filmed by the Byrds, the Elvin Bishop Group, Sha-Na-Na, Van Morrison, and the Allman Brothers Band, as well as behind-the-scenes footage of Bill Graham and the Fillmore East staff at work. \n\nThe Allman Brothers performance is nothing short of spectacular and features the original lineup that included Duane Allman and Berry Oakley. Recorded six months prior to the legendary Live At Fillmore East double album set, this performance captures the Allman Brothers when they were a relatively new band, full of youthful passion and performing what would become classic original material when it was fresh and new.\n\nFollowing Bill Graham's introduction, they kick things off with a tight performance of \"Don't Keep Me Wonderin',\" which features the band's friend, Tom Doucette, blowing harp over the group's trademark sound. Gregg's vocal is barely audible, but it's obvious the group is full of fire. \"Dreams,\" which follows, slows things down a bit and the group establishes a relaxed groove that showcases their trademark sound, blending elements that would eventually come to define \"Southern Rock.\"\n\nThey hit their stride on the next number, Dickey Betts' \"In Memory Of Elizabeth Reed.\" Here, the dual guitar attack of Allman and Betts is astounding. The two guitarists intertwine and synchronize in a manner nothing short of telepathic, creating a melting pot seasoned with elements of jazz, rock, country, and blues into a style utterly their own. The set ends with a ferocious take of \"Whipping Post\" that features outstanding melodic bass playing from Berry Oakley, with both Duane Allman and Dickey Betts soaring over the propulsive rhythm section. Shorter than the expansive versions that would develop in coming months, this is all the more fascinating for it, as they compress an incredible amount of energy into the time allotted. \n\nTime constrictions and vocal microphone malfunctions aside, this is still a fascinating performance. This original lineup of the band was certainly one of the most innovative and captivating bands to ever play the Fillmore."
+        }
+      },
+      "contentDetails": {
+        "duration": "PT11M23S",
+        "dimension": "2d",
+        "definition": "sd",
+        "caption": "false",
+        "licensedContent": true,
+        "contentRating": {},
+        "projection": "rectangular"
+      },
+      "statistics": {
+        "viewCount": "15111123",
+        "likeCount": "114163",
+        "favoriteCount": "0",
+        "commentCount": "12627"
+      }
+    }
+  ],
+  "pageInfo": {
+    "totalResults": 1,
+    "resultsPerPage": 1
+  }
+}
+"#;
+
+        let result: VideosResource = serde_json::from_str(json).unwrap();
+        assert_eq!(result.items.len(), 1);
     }
 }
